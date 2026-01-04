@@ -1,0 +1,4 @@
+formulas(assumptions).
+exists x all y loves(x,y).
+all x exists y loves(y,x).
+end_of_list.

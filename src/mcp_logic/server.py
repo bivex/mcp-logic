@@ -1,3 +1,16 @@
+# Copyright (c) 2026 Bivex
+#
+# Author: Bivex
+# Available for contact via email: support@b-b.top
+# For up-to-date contact information:
+# https://github.com/bivex
+#
+# Created: 2026-01-04T10:10:40
+# Last Updated: 2026-01-04T10:11:58
+#
+# Licensed under the MIT License.
+# Commercial licensing available upon request.
+
 import logging
 import os
 import subprocess
@@ -5,7 +18,7 @@ import tempfile
 import argparse
 import asyncio
 import json
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Tuple, Optional
 from pathlib import Path
 from mcp.server.models import InitializationOptions
 import mcp.types as types
@@ -16,6 +29,7 @@ import mcp.server.stdio
 from mcp_logic.mace4_wrapper import Mace4Wrapper
 from mcp_logic.syntax_validator import validate_formulas
 from mcp_logic.categorical_helpers import CategoricalHelpers
+from mcp_logic.file_parser import parse_prover9_file, parse_mace4_file
 
 # Set up logging
 logging.basicConfig(level=logging.DEBUG)
@@ -90,6 +104,51 @@ class LogicEngine:
             except (FileNotFoundError, PermissionError, OSError):
                 pass  # Temp file cleanup failed, not critical
 
+    def _extract_formulas_from_input(self, arguments: dict) -> Tuple[List[str], Optional[str]]:
+        """
+        Extract formulas from either JSON input or file input.
+
+        Args:
+            arguments: Tool arguments
+
+        Returns:
+            Tuple of (premises, conclusion)
+        """
+        if "input_file" in arguments:
+            # File input mode
+            file_path = arguments["input_file"]
+            try:
+                premises, conclusion = parse_prover9_file(file_path)
+                return premises, conclusion
+            except Exception as e:
+                raise ValueError(f"Failed to parse input file {file_path}: {e}")
+        else:
+            # JSON input mode (backward compatibility)
+            premises = arguments.get("premises", [])
+            conclusion = arguments.get("conclusion")
+            return premises, conclusion
+
+    def _extract_premises_from_input(self, arguments: dict) -> List[str]:
+        """
+        Extract premises from either JSON input or file input.
+
+        Args:
+            arguments: Tool arguments
+
+        Returns:
+            List of premises
+        """
+        if "input_file" in arguments:
+            # File input mode
+            file_path = arguments["input_file"]
+            try:
+                return parse_mace4_file(file_path)
+            except Exception as e:
+                raise ValueError(f"Failed to parse input file {file_path}: {e}")
+        else:
+            # JSON input mode (backward compatibility)
+            return arguments.get("premises", [])
+
 
 async def main(prover_path: str):
     logger.info(f"Starting Logic MCP Server with Prover9/Mace4 at: {prover_path}")
@@ -103,38 +162,92 @@ async def main(prover_path: str):
         tools = [
             types.Tool(
                 name="prove",
-                description="Prove a logical statement using Prover9",
+                description="Prove a logical statement using Prover9. Supports both JSON input and .in files.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"premises": {"type": "array", "items": {"type": "string"}, "description": "List of logical premises"}, "conclusion": {"type": "string", "description": "Statement to prove"}},
-                    "required": ["premises", "conclusion"],
+                    "oneOf": [
+                        {
+                            "properties": {
+                                "premises": {"type": "array", "items": {"type": "string"}, "description": "List of logical premises"},
+                                "conclusion": {"type": "string", "description": "Statement to prove"}
+                            },
+                            "required": ["premises", "conclusion"]
+                        },
+                        {
+                            "properties": {
+                                "input_file": {"type": "string", "description": "Path to a Prover9 .in file containing formulas(assumptions) and formulas(goals)"}
+                            },
+                            "required": ["input_file"]
+                        }
+                    ]
                 },
             ),
             types.Tool(
                 name="check-well-formed",
-                description="Check if logical statements are well-formed with detailed syntax validation",
+                description="Check if logical statements are well-formed with detailed syntax validation. Supports both JSON input and .in files.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"statements": {"type": "array", "items": {"type": "string"}, "description": "Logical statements to check"}},
-                    "required": ["statements"],
+                    "oneOf": [
+                        {
+                            "properties": {
+                                "statements": {"type": "array", "items": {"type": "string"}, "description": "Logical statements to check"}
+                            },
+                            "required": ["statements"]
+                        },
+                        {
+                            "properties": {
+                                "input_file": {"type": "string", "description": "Path to a .in file containing formulas to validate"}
+                            },
+                            "required": ["input_file"]
+                        }
+                    ]
                 },
             ),
             types.Tool(
                 name="find-model",
-                description="Use Mace4 to find a finite model satisfying the given premises",
+                description="Use Mace4 to find a finite model satisfying the given premises. Supports both JSON input and .in files.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"premises": {"type": "array", "items": {"type": "string"}, "description": "List of logical premises"}, "domain_size": {"type": "integer", "description": "Optional: specific domain size to search (default: incrementally search 2-10)"}},
-                    "required": ["premises"],
+                    "oneOf": [
+                        {
+                            "properties": {
+                                "premises": {"type": "array", "items": {"type": "string"}, "description": "List of logical premises"},
+                                "domain_size": {"type": "integer", "description": "Optional: specific domain size to search (default: incrementally search 2-10)"}
+                            },
+                            "required": ["premises"]
+                        },
+                        {
+                            "properties": {
+                                "input_file": {"type": "string", "description": "Path to a Mace4 .in file containing formulas(assumptions)"},
+                                "domain_size": {"type": "integer", "description": "Optional: specific domain size to search (default: incrementally search 2-10)"}
+                            },
+                            "required": ["input_file"]
+                        }
+                    ]
                 },
             ),
             types.Tool(
                 name="find-counterexample",
-                description="Use Mace4 to find a counterexample showing the conclusion doesn't follow from premises",
+                description="Use Mace4 to find a counterexample showing the conclusion doesn't follow from premises. Supports both JSON input and .in files.",
                 inputSchema={
                     "type": "object",
-                    "properties": {"premises": {"type": "array", "items": {"type": "string"}, "description": "List of logical premises"}, "conclusion": {"type": "string", "description": "Conclusion to disprove"}, "domain_size": {"type": "integer", "description": "Optional: specific domain size to search"}},
-                    "required": ["premises", "conclusion"],
+                    "oneOf": [
+                        {
+                            "properties": {
+                                "premises": {"type": "array", "items": {"type": "string"}, "description": "List of logical premises"},
+                                "conclusion": {"type": "string", "description": "Conclusion to disprove"},
+                                "domain_size": {"type": "integer", "description": "Optional: specific domain size to search"}
+                            },
+                            "required": ["premises", "conclusion"]
+                        },
+                        {
+                            "properties": {
+                                "input_file": {"type": "string", "description": "Path to a Prover9 .in file containing formulas(assumptions) and formulas(goals)"},
+                                "domain_size": {"type": "integer", "description": "Optional: specific domain size to search"}
+                            },
+                            "required": ["input_file"]
+                        }
+                    ]
                 },
             ),
             types.Tool(
@@ -169,36 +282,62 @@ async def main(prover_path: str):
         """Handle tool execution requests"""
         try:
             if name == "prove":
+                # Extract formulas from input (JSON or file)
+                premises, conclusion = engine._extract_formulas_from_input(arguments)
+
+                if conclusion is None:
+                    return [types.TextContent(type="text", text=json.dumps({"result": "error", "reason": "No conclusion found in input. For file input, ensure formulas(goals) section exists."}, indent=2))]
+
                 # Validate syntax first
-                all_formulas = arguments["premises"] + [arguments["conclusion"]]
+                all_formulas = premises + [conclusion]
                 validation = validate_formulas(all_formulas)
 
                 if not validation["valid"]:
                     return [types.TextContent(type="text", text=json.dumps({"result": "syntax_error", "validation": validation}, indent=2))]
 
                 # Run proof
-                input_file = engine._create_input_file(arguments["premises"], arguments["conclusion"])
+                input_file = engine._create_input_file(premises, conclusion)
                 results = engine._run_prover(input_file)
                 return [types.TextContent(type="text", text=json.dumps(results, indent=2))]
 
             elif name == "check-well-formed":
-                validation = validate_formulas(arguments["statements"])
+                if "input_file" in arguments:
+                    # File input mode
+                    try:
+                        premises, conclusion = parse_prover9_file(arguments["input_file"])
+                        statements = premises + ([conclusion] if conclusion else [])
+                    except Exception as e:
+                        return [types.TextContent(type="text", text=json.dumps({"result": "error", "reason": f"Failed to parse input file: {e}"}, indent=2))]
+                else:
+                    # JSON input mode (backward compatibility)
+                    statements = arguments["statements"]
+
+                validation = validate_formulas(statements)
                 return [types.TextContent(type="text", text=json.dumps(validation, indent=2))]
 
             elif name == "find-model":
                 if not engine.mace4:
                     return [types.TextContent(type="text", text=json.dumps({"error": "Mace4 not available"}))]
 
+                # Extract premises from input (JSON or file)
+                premises = engine._extract_premises_from_input(arguments)
                 domain_size = arguments.get("domain_size")
-                result = engine.mace4.find_model(arguments["premises"], domain_size)
+
+                result = engine.mace4.find_model(premises, domain_size)
                 return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
             elif name == "find-counterexample":
                 if not engine.mace4:
                     return [types.TextContent(type="text", text=json.dumps({"error": "Mace4 not available"}))]
 
+                # Extract formulas from input (JSON or file)
+                premises, conclusion = engine._extract_formulas_from_input(arguments)
+
+                if conclusion is None:
+                    return [types.TextContent(type="text", text=json.dumps({"result": "error", "reason": "No conclusion found in input. For file input, ensure formulas(goals) section exists."}, indent=2))]
+
                 domain_size = arguments.get("domain_size")
-                result = engine.mace4.find_counterexample(arguments["premises"], arguments["conclusion"], domain_size)
+                result = engine.mace4.find_counterexample(premises, conclusion, domain_size)
                 return [types.TextContent(type="text", text=json.dumps(result, indent=2))]
 
             elif name == "verify-commutativity":
